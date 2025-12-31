@@ -10685,7 +10685,7 @@ TEST(VulnerabilityTest, CRLFInjectionInHeaders) {
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(PORT);
+    addr.sin_port = htons(PORT + 1);
     ::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
     ::bind(srv, reinterpret_cast<sockaddr *>(&addr), sizeof(addr));
     ::listen(srv, 1);
@@ -10694,16 +10694,17 @@ TEST(VulnerabilityTest, CRLFInjectionInHeaders) {
     socklen_t cli_len = sizeof(cli_addr);
     auto cli = ::accept(srv, reinterpret_cast<sockaddr *>(&cli_addr), &cli_len);
 
+#ifdef _WIN32
+    DWORD recv_timeout_ms = 1000;
+    ::setsockopt(cli, SOL_SOCKET, SO_RCVTIMEO,
+                 reinterpret_cast<const char *>(&recv_timeout_ms),
+                 sizeof(recv_timeout_ms));
+#else
     struct timeval tv;
     tv.tv_sec = 1;
     tv.tv_usec = 0;
-    ::setsockopt(cli, SOL_SOCKET, SO_RCVTIMEO,
-#ifdef _WIN32
-                 reinterpret_cast<const char *>(&tv),
-#else
-                 &tv,
+    ::setsockopt(cli, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 #endif
-                 sizeof(tv));
 
     std::string buf_all;
     char buf[2048];
@@ -10731,13 +10732,13 @@ TEST(VulnerabilityTest, CRLFInjectionInHeaders) {
       }
     }
 
-    ::close(cli);
-    ::close(srv);
+    httplib::detail::close_socket(cli);
+    httplib::detail::close_socket(srv);
   });
 
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-  auto cli = httplib::Client("127.0.0.1", PORT);
+  auto cli = httplib::Client(HOST, PORT + 1);
 
   auto headers = httplib::Headers{
       {"A", "B\r\n\r\nGET /pwned HTTP/1.1\r\nHost: 127.0.0.1:1234\r\n\r\n"},
@@ -10745,8 +10746,7 @@ TEST(VulnerabilityTest, CRLFInjectionInHeaders) {
 
   auto res = cli.Get("/hi", headers);
   EXPECT_FALSE(res);
-
-  if (res) { EXPECT_EQ(httplib::Error::InvalidHeaders, res.error()); }
+  EXPECT_EQ(httplib::Error::InvalidHeaders, res.error());
 
   server_thread.join();
 }
